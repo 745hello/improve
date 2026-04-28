@@ -10,7 +10,7 @@ GLR_WARMUP_ITERATIONS = 200
 GLR_REWEIGHT_POWER = 0.5
 GLR_STRIDE_POWER = 0.25
 DCAF_REDUCTION_RATIO = 8
-DCAF_RESIDUAL_ALPHA_INIT = -2.0  # start with weaker residual to stabilize early training
+DCAF_RESIDUAL_ALPHA_LOGIT_INIT = -2.0  # start with weaker residual to stabilize early training
 DCAF_NUM_BRANCHES = 3
 ECA_CHANNEL_THRESHOLD = 256
 ECA_KERNEL_SMALL = 3
@@ -20,7 +20,7 @@ FDSG_GATE_SPATIAL_WEIGHT = 0.35
 FDSG_GATE_PRIOR_WEIGHT = 0.20
 FDSG_TEMP_MIN = 0.5
 FDSG_TEMP_MAX = 2.0
-FDSG_RESIDUAL_ALPHA_INIT = -2.0  # start with weaker residual to stabilize early training
+FDSG_RESIDUAL_ALPHA_LOGIT_INIT = -2.0  # start with weaker residual to stabilize early training
 GATE_MIN_VALUE = 0.05
 GATE_MAX_VALUE = 0.95
 NORMALIZATION_MIN_MEAN = 0.05
@@ -221,7 +221,7 @@ class DCAF(nn.Module):
         self.branch_scale = None
         self.out_eca = None
         self.branch_logits = nn.Parameter(torch.zeros(DCAF_NUM_BRANCHES))
-        self.residual_alpha = nn.Parameter(torch.tensor(DCAF_RESIDUAL_ALPHA_INIT))
+        self.residual_alpha = nn.Parameter(torch.tensor(DCAF_RESIDUAL_ALPHA_LOGIT_INIT))
 
         # 若 parse_model 已提供通道信息，则在构造时直接建参，确保参数被优化器捕获
         if c_low is not None and c_cur is not None and c_high is not None:
@@ -295,7 +295,7 @@ class DCAF(nn.Module):
         d = self.refine_detail(self.align_det(f_low))
         c = self.refine_current(self.align_cur(f_cur))
         s = self.refine_semantic(self.align_sem(f_high))
-        c_res = c
+        c_residual = c
         if self.branch_scale is not None:
             d = d * self.branch_scale[0]
             c = c * self.branch_scale[1]
@@ -314,7 +314,7 @@ class DCAF(nn.Module):
         )
         if self.out_eca is not None:
             out = self.out_eca(out)
-        return c_res + torch.sigmoid(self.residual_alpha) * out
+        return c_residual + torch.sigmoid(self.residual_alpha) * out
 
 # ----------------------------
 # Innovation-2: FDSG
@@ -368,14 +368,14 @@ class FDSG(nn.Module):
         self.gate_logits = nn.Parameter(
             torch.tensor([FDSG_GATE_CONTENT_WEIGHT, FDSG_GATE_SPATIAL_WEIGHT, FDSG_GATE_PRIOR_WEIGHT], dtype=torch.float)
         )
-        self.gate_temperature = nn.Parameter(torch.tensor(1.0))
+        self.gate_temperature_logit = nn.Parameter(torch.tensor(0.0))
         self.prior_bias = nn.Parameter(torch.tensor(0.0))
-        self.residual_alpha = nn.Parameter(torch.tensor(FDSG_RESIDUAL_ALPHA_INIT))
+        self.residual_alpha = nn.Parameter(torch.tensor(FDSG_RESIDUAL_ALPHA_LOGIT_INIT))
         self.out_eca = ECALite(c)
 
-    def _clamped_temperature(self, x: torch.Tensor) -> torch.Tensor:
-        # Clamp per-forward to keep gate temperature stable under mixed precision.
-        temp = self.gate_temperature.clamp(FDSG_TEMP_MIN, FDSG_TEMP_MAX)
+    def _gate_temperature(self, x: torch.Tensor) -> torch.Tensor:
+        # Sigmoid-parameterized temperature stays within [min, max] without per-step clamping.
+        temp = (FDSG_TEMP_MAX - FDSG_TEMP_MIN) * self.gate_temperature_logit.sigmoid() + FDSG_TEMP_MIN
         return temp.to(device=x.device, dtype=x.dtype)
 
     def forward(self, x):
@@ -388,7 +388,7 @@ class FDSG(nn.Module):
         prior = self.prior.to(device=x.device, dtype=x.dtype)
         texture_score = torch.sigmoid(torch.mean(torch.abs(xr - low_base), dim=1, keepdim=True)).to(dtype=x.dtype)
         adaptive_prior = torch.clamp(prior + self.prior_bias.tanh() * (texture_score - 0.5), 0.0, 1.0)
-        temp = self._clamped_temperature(x)
+        temp = self._gate_temperature(x)
         gate_w = torch.softmax(self.gate_logits / temp, dim=0).to(device=x.device, dtype=x.dtype)
         g = torch.clamp(
             gate_w[0] * gc + gate_w[1] * gs + gate_w[2] * adaptive_prior,
@@ -468,6 +468,7 @@ class DetectGLR(Detect):
             stride_mean = stride.mean().clamp_min(self.eps)
             prior = (stride / stride_mean).pow(self.stride_balance_power)
             prior = prior / prior.mean().clamp_min(self.eps)
+            # Apply the same stride prior to both cls and box to rebalance per-level contributions consistently.
             a_cls = a_cls * prior
             a_box = a_box * prior
         a_cls = a_cls / (a_cls.sum() + self.eps) * self.nl
