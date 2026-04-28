@@ -10,9 +10,13 @@ GLR_WARMUP_ITERATIONS = 200
 GLR_REWEIGHT_POWER = 0.5
 GLR_STRIDE_POWER = 0.25
 DCAF_REDUCTION_RATIO = 8
+DCAF_RESIDUAL_ALPHA_INIT = -2.0  # start with weaker residual to stabilize early training
 FDSG_GATE_CONTENT_WEIGHT = 0.45
 FDSG_GATE_SPATIAL_WEIGHT = 0.35
 FDSG_GATE_PRIOR_WEIGHT = 0.20
+FDSG_TEMP_MIN = 0.5
+FDSG_TEMP_MAX = 2.0
+FDSG_RESIDUAL_ALPHA_INIT = -2.0  # start with weaker residual to stabilize early training
 GATE_MIN_VALUE = 0.05
 GATE_MAX_VALUE = 0.95
 NORMALIZATION_MIN_MEAN = 0.05
@@ -212,7 +216,7 @@ class DCAF(nn.Module):
         self.branch_scale = None
         self.out_eca = None
         self.branch_logits = nn.Parameter(torch.zeros(3))
-        self.residual_alpha = nn.Parameter(torch.tensor(-2.0))
+        self.residual_alpha = nn.Parameter(torch.tensor(DCAF_RESIDUAL_ALPHA_INIT))
 
         # 若 parse_model 已提供通道信息，则在构造时直接建参，确保参数被优化器捕获
         if c_low is not None and c_cur is not None and c_high is not None:
@@ -361,7 +365,7 @@ class FDSG(nn.Module):
         )
         self.gate_temperature = nn.Parameter(torch.tensor(1.0))
         self.prior_bias = nn.Parameter(torch.tensor(0.0))
-        self.residual_alpha = nn.Parameter(torch.tensor(-2.0))
+        self.residual_alpha = nn.Parameter(torch.tensor(FDSG_RESIDUAL_ALPHA_INIT))
         self.out_eca = ECALite(c)
 
     def forward(self, x):
@@ -374,7 +378,7 @@ class FDSG(nn.Module):
         prior = self.prior.to(device=x.device, dtype=x.dtype)
         texture_score = torch.sigmoid(torch.mean(torch.abs(xr - low_base), dim=1, keepdim=True)).to(dtype=x.dtype)
         adaptive_prior = torch.clamp(prior + self.prior_bias.tanh() * (texture_score - 0.5), 0.0, 1.0)
-        temp = self.gate_temperature.clamp(0.5, 2.0).to(device=x.device, dtype=x.dtype)
+        temp = self.gate_temperature.clamp(FDSG_TEMP_MIN, FDSG_TEMP_MAX).to(device=x.device, dtype=x.dtype)
         gate_w = torch.softmax(self.gate_logits / temp, dim=0).to(device=x.device, dtype=x.dtype)
         g = torch.clamp(
             gate_w[0] * gc + gate_w[1] * gs + gate_w[2] * adaptive_prior,
