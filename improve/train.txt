@@ -1,0 +1,83 @@
+# Ultralytics 🚀 AGPL-3.0
+# YOLO11-ULCF: DCAF + FDSG + DetectGLR
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
+# Ultralytics YOLO11 object detection model with P3/8 - P5/32 outputs
+# Model docs: https://docs.ultralytics.com/models/yolo11
+# Task docs: https://docs.ultralytics.com/tasks/detect
+
+# Parameters
+nc: 80 # number of classes
+scales: # model compound scaling constants, i.e. 'model=yolo11n.yaml' will call yolo11.yaml with scale 'n'
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 1024] # summary: 181 layers, 2624080 parameters, 2624064 gradients, 6.6 GFLOPs
+  s: [0.50, 0.50, 1024] # summary: 181 layers, 9458752 parameters, 9458736 gradients, 21.7 GFLOPs
+  m: [0.50, 1.00, 512] # summary: 231 layers, 20114688 parameters, 20114672 gradients, 68.5 GFLOPs
+  l: [1.00, 1.00, 512] # summary: 357 layers, 25372160 parameters, 25372144 gradients, 87.6 GFLOPs
+  x: [1.00, 1.50, 512] # summary: 357 layers, 56966176 parameters, 56966160 gradients, 196.0 GFLOPs
+
+
+backbone:
+  - [-1, 1, Conv, [64, 3, 2]]      # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]     # 1-P2/4
+  - [-1, 2, C3k2, [256, False, 0.25]]
+  - [-1, 1, Conv, [256, 3, 2]]     # 3-P3/8
+  - [-1, 2, C3k2, [512, False, 0.25]]   # 4
+  - [-1, 1, Conv, [512, 3, 2]]     # 5-P4/16
+  - [-1, 2, C3k2, [512, True]]     # 6
+  - [-1, 1, Conv, [1024, 3, 2]]    # 7-P5/32
+  - [-1, 2, C3k2, [1024, True]]    # 8
+  - [-1, 1, SPPF, [1024, 5]]       # 9
+  - [-1, 2, C2PSA, [1024]]         # 10
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]      # 11
+  - [[-1, 6], 1, Concat, [1]]                       # 12
+  - [-1, 2, C3k2, [512, False]]                     # 13  (P4, 512)
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]      # 14
+  - [[-1, 4], 1, Concat, [1]]                       # 15
+  - [-1, 2, C3k2, [256, False]]                     # 16  (P3, 256)
+
+  - [[16, 16, 13], 1, DCAF, [256]]                  # 17  -> 256
+  - [-1, 1, FDSG, [256, 3]]                         # 18  -> 256
+
+  - [-1, 1, Conv, [512, 3, 2]]                      # 19  关键：256->512
+  - [[-1, 13, 6], 1, DCAF, [512]]                   # 20  -> 512
+  - [-1, 1, FDSG, [512, 4]]                         # 21  -> 512
+
+  - [-1, 1, Conv, [1024, 3, 2]]                     # 22  关键：512->1024
+  - [[-1, 10, 10], 1, DCAF, [1024]]                 # 23  -> 1024
+  - [-1, 1, FDSG, [1024, 5]]                        # 24  -> 1024
+
+
+
+
+                   from  n    params  module                                       arguments                     
+  0                  -1  1       928  ultralytics.nn.modules.conv.Conv             [3, 32, 3, 2]                 
+  1                  -1  1     18560  ultralytics.nn.modules.conv.Conv             [32, 64, 3, 2]                
+  2                  -1  1     26080  ultralytics.nn.modules.block.C3k2            [64, 128, 1, False, 0.25]     
+  3                  -1  1    147712  ultralytics.nn.modules.conv.Conv             [128, 128, 3, 2]              
+  4                  -1  1    103360  ultralytics.nn.modules.block.C3k2            [128, 256, 1, False, 0.25]    
+  5                  -1  1    590336  ultralytics.nn.modules.conv.Conv             [256, 256, 3, 2]              
+  6                  -1  1    346112  ultralytics.nn.modules.block.C3k2            [256, 256, 1, True]           
+  7                  -1  1   1180672  ultralytics.nn.modules.conv.Conv             [256, 512, 3, 2]              
+  8                  -1  1   1380352  ultralytics.nn.modules.block.C3k2            [512, 512, 1, True]           
+  9                  -1  1    656896  ultralytics.nn.modules.block.SPPF            [512, 512, 5]                 
+ 10                  -1  1    990976  ultralytics.nn.modules.block.C2PSA           [512, 512, 1]                 
+ 11                  -1  1         0  torch.nn.modules.upsampling.Upsample         [None, 2, 'nearest']          
+ 12             [-1, 6]  1         0  ultralytics.nn.modules.conv.Concat           [1]                           
+ 13                  -1  1    443776  ultralytics.nn.modules.block.C3k2            [768, 256, 1, False]          
+ 14                  -1  1         0  torch.nn.modules.upsampling.Upsample         [None, 2, 'nearest']          
+ 15             [-1, 4]  1         0  ultralytics.nn.modules.conv.Concat           [1]                           
+ 16                  -1  1    127680  ultralytics.nn.modules.block.C3k2            [512, 128, 1, False]          
+ 17        [16, 16, 13]  1    164288  ultralytics.nn.modules.dcaf_fdsg_glr.DCAF    [128, 128, 128, 256]          
+ 18                  -1  1      5191  ultralytics.nn.modules.dcaf_fdsg_glr.FDSG    [128, 3]                      
+ 19                  -1  1    295424  ultralytics.nn.modules.conv.Conv             [128, 256, 3, 2]              
+ 20         [-1, 13, 6]  1    578416  ultralytics.nn.modules.dcaf_fdsg_glr.DCAF    [256, 256, 256, 256]          
+ 21                  -1  1     19063  ultralytics.nn.modules.dcaf_fdsg_glr.FDSG    [256, 4]                      
+ 22                  -1  1   1180672  ultralytics.nn.modules.conv.Conv             [256, 512, 3, 2]              
+ 23        [-1, 10, 10]  1   2288344  ultralytics.nn.modules.dcaf_fdsg_glr.DCAF    [512, 512, 512, 512]          
+ 24                  -1  1     73447  ultralytics.nn.modules.dcaf_fdsg_glr.FDSG    [512, 5]                      
+ 25        [18, 21, 24]  1    850368  ultralytics.nn.modules.dcaf_fdsg_glr.DetectGLR[80, [128, 256, 512]]         
+YOLO11s summary: 360 layers, 11,468,653 parameters, 11,468,637 gradients, 26.4 GFLOPs
