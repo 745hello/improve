@@ -11,6 +11,7 @@ GLR_REWEIGHT_POWER = 0.5
 GLR_STRIDE_POWER = 0.25
 DCAF_REDUCTION_RATIO = 8
 DCAF_RESIDUAL_ALPHA_INIT = -2.0  # start with weaker residual to stabilize early training
+DCAF_NUM_BRANCHES = 3
 ECA_CHANNEL_THRESHOLD = 256
 ECA_KERNEL_SMALL = 3
 ECA_KERNEL_LARGE = 5
@@ -219,7 +220,7 @@ class DCAF(nn.Module):
         self.fuse = None
         self.branch_scale = None
         self.out_eca = None
-        self.branch_logits = nn.Parameter(torch.zeros(3))
+        self.branch_logits = nn.Parameter(torch.zeros(DCAF_NUM_BRANCHES))
         self.residual_alpha = nn.Parameter(torch.tensor(DCAF_RESIDUAL_ALPHA_INIT))
 
         # 若 parse_model 已提供通道信息，则在构造时直接建参，确保参数被优化器捕获
@@ -258,7 +259,7 @@ class DCAF(nn.Module):
             nn.SiLU(inplace=True),
         )
         self.mix_gate = MIBlendGateLite(self.c_out, r=DCAF_REDUCTION_RATIO)
-        self.branch_scale = nn.Parameter(torch.ones(3, self.c_out, 1, 1))
+        self.branch_scale = nn.Parameter(torch.ones(DCAF_NUM_BRANCHES, self.c_out, 1, 1))
 
         # 融合
         self.fuse = nn.Sequential(
@@ -372,6 +373,11 @@ class FDSG(nn.Module):
         self.residual_alpha = nn.Parameter(torch.tensor(FDSG_RESIDUAL_ALPHA_INIT))
         self.out_eca = ECALite(c)
 
+    def _clamped_temperature(self, x: torch.Tensor) -> torch.Tensor:
+        # Clamp per-forward to keep gate temperature stable under mixed precision.
+        temp = self.gate_temperature.clamp(FDSG_TEMP_MIN, FDSG_TEMP_MAX)
+        return temp.to(device=x.device, dtype=x.dtype)
+
     def forward(self, x):
         xr = self.reduce(x)
         low_base = self.low(xr)
@@ -382,7 +388,7 @@ class FDSG(nn.Module):
         prior = self.prior.to(device=x.device, dtype=x.dtype)
         texture_score = torch.sigmoid(torch.mean(torch.abs(xr - low_base), dim=1, keepdim=True)).to(dtype=x.dtype)
         adaptive_prior = torch.clamp(prior + self.prior_bias.tanh() * (texture_score - 0.5), 0.0, 1.0)
-        temp = self.gate_temperature.clamp(FDSG_TEMP_MIN, FDSG_TEMP_MAX).to(device=x.device, dtype=x.dtype)
+        temp = self._clamped_temperature(x)
         gate_w = torch.softmax(self.gate_logits / temp, dim=0).to(device=x.device, dtype=x.dtype)
         g = torch.clamp(
             gate_w[0] * gc + gate_w[1] * gs + gate_w[2] * adaptive_prior,
@@ -457,16 +463,17 @@ class DetectGLR(Detect):
         a_box = inv_box / (inv_box.sum() + self.eps) * self.nl
         a_cls = a_cls.clamp(0.25, 4.0)
         a_box = a_box.clamp(0.25, 4.0)
-        a_cls = a_cls / (a_cls.sum() + self.eps) * self.nl
-        a_box = a_box / (a_box.sum() + self.eps) * self.nl
-        stride = getattr(self, "stride", None)
-        if stride is not None and stride.numel() == self.nl and float(stride.max()) > 0:
-            stride = stride.to(self.ema_cls.device)
+        if self._has_valid_stride():
+            stride = self.stride.to(self.ema_cls.device)
             stride_mean = stride.mean().clamp_min(self.eps)
             prior = (stride / stride_mean).pow(self.stride_balance_power)
             prior = prior / prior.mean().clamp_min(self.eps)
             a_cls = a_cls * prior
             a_box = a_box * prior
-            a_cls = a_cls / (a_cls.sum() + self.eps) * self.nl
-            a_box = a_box / (a_box.sum() + self.eps) * self.nl
+        a_cls = a_cls / (a_cls.sum() + self.eps) * self.nl
+        a_box = a_box / (a_box.sum() + self.eps) * self.nl
         return (1 - ramp) * ones + ramp * a_cls, (1 - ramp) * ones + ramp * a_box
+
+    def _has_valid_stride(self) -> bool:
+        stride = getattr(self, "stride", None)
+        return stride is not None and stride.numel() == self.nl and float(stride.max()) > 0
