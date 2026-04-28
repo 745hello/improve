@@ -11,6 +11,9 @@ GLR_REWEIGHT_POWER = 0.5
 GLR_STRIDE_POWER = 0.25
 DCAF_REDUCTION_RATIO = 8
 DCAF_RESIDUAL_ALPHA_INIT = -2.0  # start with weaker residual to stabilize early training
+ECA_CHANNEL_THRESHOLD = 256
+ECA_KERNEL_SMALL = 3
+ECA_KERNEL_LARGE = 5
 FDSG_GATE_CONTENT_WEIGHT = 0.45
 FDSG_GATE_SPATIAL_WEIGHT = 0.35
 FDSG_GATE_PRIOR_WEIGHT = 0.20
@@ -60,9 +63,10 @@ class DWConv(nn.Module):
 # Lightweight channel attention
 # ----------------------------
 def _eca_kernel(channels: int) -> int:
-    if channels <= 256:
-        return 3
-    return 5
+    # Use a slightly larger kernel for higher channel counts to expand channel interaction cheaply.
+    if channels <= ECA_CHANNEL_THRESHOLD:
+        return ECA_KERNEL_SMALL
+    return ECA_KERNEL_LARGE
 
 
 class ECALite(nn.Module):
@@ -458,7 +462,8 @@ class DetectGLR(Detect):
         stride = getattr(self, "stride", None)
         if stride is not None and stride.numel() == self.nl and float(stride.max()) > 0:
             stride = stride.to(self.ema_cls.device)
-            prior = (stride / stride.mean().clamp_min(self.eps)).pow(self.stride_balance_power)
+            stride_mean = stride.mean().clamp_min(self.eps)
+            prior = (stride / stride_mean).pow(self.stride_balance_power)
             prior = prior / prior.mean().clamp_min(self.eps)
             a_cls = a_cls * prior
             a_box = a_box * prior
