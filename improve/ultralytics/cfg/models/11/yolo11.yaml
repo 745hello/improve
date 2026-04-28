@@ -1,5 +1,5 @@
 # Ultralytics 🚀 AGPL-3.0
-# YOLO11-ULCF: DCAF + FDSG + DetectGLR
+# YOLO11-ULCFv2: DCAFv2 + FDSGv2 + DetectGLR+
 
 nc: 80
 scales:

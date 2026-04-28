@@ -8,6 +8,7 @@ from ultralytics.nn.modules.head import Detect
 
 GLR_WARMUP_ITERATIONS = 200
 GLR_REWEIGHT_POWER = 0.5
+GLR_STRIDE_POWER = 0.25
 DCAF_REDUCTION_RATIO = 8
 FDSG_GATE_CONTENT_WEIGHT = 0.45
 FDSG_GATE_SPATIAL_WEIGHT = 0.35
@@ -49,6 +50,32 @@ class DWConv(nn.Module):
 
     def forward(self, x):
         return self.pw(self.dw(x))
+
+
+# ----------------------------
+# Lightweight channel attention
+# ----------------------------
+def _eca_kernel(channels: int) -> int:
+    if channels <= 256:
+        return 3
+    return 5
+
+
+class ECALite(nn.Module):
+    """Efficient channel attention with small 1D conv."""
+
+    def __init__(self, c: int):
+        super().__init__()
+        k = _eca_kernel(c)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=k, padding=(k - 1) // 2, bias=False)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x):
+        y = self.pool(x)
+        y = self.conv(y.squeeze(-1).transpose(1, 2))
+        y = self.act(y).transpose(1, 2).unsqueeze(-1)
+        return x * y
 
 
 # ----------------------------
@@ -182,8 +209,10 @@ class DCAF(nn.Module):
         self.refine_current = None
         self.mix_gate = None
         self.fuse = None
+        self.branch_scale = None
+        self.out_eca = None
         self.branch_logits = nn.Parameter(torch.zeros(3))
-        self.residual_alpha = nn.Parameter(torch.tensor(0.0))
+        self.residual_alpha = nn.Parameter(torch.tensor(-2.0))
 
         # 若 parse_model 已提供通道信息，则在构造时直接建参，确保参数被优化器捕获
         if c_low is not None and c_cur is not None and c_high is not None:
@@ -221,6 +250,7 @@ class DCAF(nn.Module):
             nn.SiLU(inplace=True),
         )
         self.mix_gate = MIBlendGateLite(self.c_out, r=DCAF_REDUCTION_RATIO)
+        self.branch_scale = nn.Parameter(torch.ones(3, self.c_out, 1, 1))
 
         # 融合
         self.fuse = nn.Sequential(
@@ -231,6 +261,7 @@ class DCAF(nn.Module):
             nn.BatchNorm2d(self.c_out),
             nn.SiLU(inplace=True),
         )
+        self.out_eca = ECALite(self.c_out)
 
         if device is not None or dtype is not None:
             self.to(device=device, dtype=dtype)
@@ -255,6 +286,11 @@ class DCAF(nn.Module):
         d = self.refine_detail(self.align_det(f_low))
         c = self.refine_current(self.align_cur(f_cur))
         s = self.refine_semantic(self.align_sem(f_high))
+        c_res = c
+        if self.branch_scale is not None:
+            d = d * self.branch_scale[0]
+            c = c * self.branch_scale[1]
+            s = s * self.branch_scale[2]
         weight_semantic, weight_detail, weight_current = self.mix_gate(s, d, c)
         branch_prior = torch.softmax(self.branch_logits, dim=0)
         out = self.fuse(
@@ -267,7 +303,9 @@ class DCAF(nn.Module):
                 dim=1,
             )
         )
-        return c + torch.sigmoid(self.residual_alpha) * out
+        if self.out_eca is not None:
+            out = self.out_eca(out)
+        return c_res + torch.sigmoid(self.residual_alpha) * out
 
 # ----------------------------
 # Innovation-2: FDSG
@@ -321,8 +359,10 @@ class FDSG(nn.Module):
         self.gate_logits = nn.Parameter(
             torch.tensor([FDSG_GATE_CONTENT_WEIGHT, FDSG_GATE_SPATIAL_WEIGHT, FDSG_GATE_PRIOR_WEIGHT], dtype=torch.float)
         )
+        self.gate_temperature = nn.Parameter(torch.tensor(1.0))
         self.prior_bias = nn.Parameter(torch.tensor(0.0))
-        self.residual_alpha = nn.Parameter(torch.tensor(0.0))
+        self.residual_alpha = nn.Parameter(torch.tensor(-2.0))
+        self.out_eca = ECALite(c)
 
     def forward(self, x):
         xr = self.reduce(x)
@@ -334,14 +374,17 @@ class FDSG(nn.Module):
         prior = self.prior.to(device=x.device, dtype=x.dtype)
         texture_score = torch.sigmoid(torch.mean(torch.abs(xr - low_base), dim=1, keepdim=True)).to(dtype=x.dtype)
         adaptive_prior = torch.clamp(prior + self.prior_bias.tanh() * (texture_score - 0.5), 0.0, 1.0)
-        gate_w = torch.softmax(self.gate_logits, dim=0).to(device=x.device, dtype=x.dtype)
+        temp = self.gate_temperature.clamp(0.5, 2.0).to(device=x.device, dtype=x.dtype)
+        gate_w = torch.softmax(self.gate_logits / temp, dim=0).to(device=x.device, dtype=x.dtype)
         g = torch.clamp(
             gate_w[0] * gc + gate_w[1] * gs + gate_w[2] * adaptive_prior,
             GATE_MIN_VALUE,
             GATE_MAX_VALUE,
         )
         out = g * high + (1.0 - g) * low
-        return x + torch.sigmoid(self.residual_alpha) * self.expand(out)
+        out = self.expand(out)
+        out = self.out_eca(out)
+        return x + torch.sigmoid(self.residual_alpha) * out
 # ----------------------------
 # Innovation-3: DetectGLR
 # ----------------------------
@@ -371,6 +414,7 @@ class DetectGLR(Detect):
         self.eps = 1e-6
         self.warmup_iters = GLR_WARMUP_ITERATIONS
         self.reweight_power = GLR_REWEIGHT_POWER
+        self.stride_balance_power = GLR_STRIDE_POWER
         self.register_buffer("ema_cls", torch.ones(self.nl))
         self.register_buffer("ema_box", torch.ones(self.nl))
         self.register_buffer("iters", torch.zeros(1))
@@ -407,4 +451,13 @@ class DetectGLR(Detect):
         a_box = a_box.clamp(0.25, 4.0)
         a_cls = a_cls / (a_cls.sum() + self.eps) * self.nl
         a_box = a_box / (a_box.sum() + self.eps) * self.nl
+        stride = getattr(self, "stride", None)
+        if stride is not None and stride.numel() == self.nl and float(stride.max()) > 0:
+            stride = stride.to(self.ema_cls.device)
+            prior = (stride / stride.mean().clamp_min(self.eps)).pow(self.stride_balance_power)
+            prior = prior / prior.mean().clamp_min(self.eps)
+            a_cls = a_cls * prior
+            a_box = a_box * prior
+            a_cls = a_cls / (a_cls.sum() + self.eps) * self.nl
+            a_box = a_box / (a_box.sum() + self.eps) * self.nl
         return (1 - ramp) * ones + ramp * a_cls, (1 - ramp) * ones + ramp * a_box
