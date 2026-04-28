@@ -2,7 +2,7 @@
 
 > 本仓库在 Ultralytics YOLOv11 基础上实现了三项核心创新模块：**DCAF**（动态跨尺度注意力融合）、**FDSG**（特征依赖尺度感知门控）和 **DetectGLR**（梯度感知层级重加权检测头），并对对应的损失函数计算流程进行了配套改造。
 >
-> **代码版本**：`ultralytics/cfg/models/11/yolo11.yaml`（模型定义）、`ultralytics/nn/modules/dcaf_fdsg_glr.py`（创新模块实现）、`ultralytics/utils/loss.py`（损失函数集成）
+> **代码版本**：`improve/ultralytics/cfg/models/11/yolo11.yaml`（模型定义）、`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（创新模块实现）、`improve/ultralytics/utils/loss.py`（损失函数集成）
 
 ---
 
@@ -29,12 +29,12 @@
 
 | # | 改进点 | 涉及文件 | 原始 YOLOv11 | 本仓库实现 | 主要收益 |
 |---|--------|----------|--------------|------------|----------|
-| 1 | 颈部结构替换 | `cfg/models/11/yolo11.yaml` | FPN+PAN（C3k2 concat 上采样） | DCAF + FDSG 双模块颈部 | 多尺度特征更充分融合，小目标 AP↑ |
-| 2 | DCAF 模块 | `nn/modules/dcaf_fdsg_glr.py` | 无（原始 concat/add 融合） | 三路（低层细节、当前层、高层语义）动态门控融合 | 消除尺度间语义鸿沟，跨尺度特征表达更丰富 |
-| 3 | FDSG 模块 | `nn/modules/dcaf_fdsg_glr.py` | 无（激活后直接输出） | 频域感知高/低频分离 + 三分量自适应门控 | 高频纹理与低频语义自适应权衡，背景鲁棒性↑ |
-| 4 | DetectGLR 检测头 | `nn/modules/dcaf_fdsg_glr.py` | 原始 Detect 头（各层等权） | 继承 Detect，增加 EMA 梯度统计与层级动态权重 | 各检测层损失贡献自适应均衡，mAP↑ |
-| 5 | 损失函数按层级计算 | `utils/loss.py` | 所有层 concat 后统一计算 | 各层独立计算 box/cls/dfl 后按 GLR 权重加权求和 | 配合 GLR 实现精细化层级梯度控制 |
-| 6 | 模型命名/注释 | `cfg/models/11/yolo11.yaml` `nn/modules/__init__.py` | 原始 Detect | YOLO11-ULCF，新模块注册到 `__all__` | 可复现性与工程规范性 |
+| 1 | 颈部结构替换 | `improve/ultralytics/cfg/models/11/yolo11.yaml` | FPN+PAN（C3k2 concat 上采样） | DCAF + FDSG 双模块颈部 | 多尺度特征更充分融合，小目标 AP↑ |
+| 2 | DCAF 模块 | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` | 无（原始 concat/add 融合） | 三路（低层细节、当前层、高层语义）动态门控融合 | 消除尺度间语义鸿沟，跨尺度特征表达更丰富 |
+| 3 | FDSG 模块 | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` | 无（激活后直接输出） | 频域感知高/低频分离 + 三分量自适应门控 | 高频纹理与低频语义自适应权衡，背景鲁棒性↑ |
+| 4 | DetectGLR 检测头 | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` | 原始 Detect 头（各层等权） | 继承 Detect，增加 EMA 梯度统计与层级动态权重 | 各检测层损失贡献自适应均衡，mAP↑ |
+| 5 | 损失函数按层级计算 | `improve/ultralytics/utils/loss.py` | 所有层 concat 后统一计算 | 各层独立计算 box/cls/dfl 后按 GLR 权重加权求和 | 配合 GLR 实现精细化层级梯度控制 |
+| 6 | 模型命名/注释 | `improve/ultralytics/cfg/models/11/yolo11.yaml`，`improve/ultralytics/nn/modules/__init__.py` | 原始 Detect | YOLO11-ULCF，新模块注册到 `__all__` | 可复现性与工程规范性 |
 
 ---
 
@@ -42,7 +42,7 @@
 
 ### 2.1 模型架构：FPN 颈部结构替换为 DCAF+FDSG 双模块颈部
 
-**改动文件**：`improve/ultralytics/cfg/models/11/yolo11.yaml`
+**改动文件**：`improve/ultralytics/cfg/models/11/yolo11.yaml`（完整模型 YAML 定义，含 backbone + head）
 
 #### 改动前（原始 YOLOv11 典型实现）
 
@@ -105,7 +105,7 @@ head:
 
 ### 2.2 创新模块一：DCAF——动态跨尺度注意力融合
 
-**改动文件**：`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（第 57–270 行）
+**改动文件**：`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（类 `DCAF`，含 `_build` 方法和 `forward` 方法）
 
 #### 改动前
 
@@ -136,7 +136,7 @@ DCAF 接收三路输入（低层 `f_low`、当前层 `f_cur`、高层 `f_high`�
 
 ### 2.3 创新模块二：FDSG——特征依赖尺度感知门控
 
-**改动文件**：`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（第 275–344 行）
+**改动文件**：`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（类 `FDSG`，含 `__init__` 和 `forward` 方法）
 
 #### 改动前
 
@@ -171,7 +171,7 @@ FDSG 接收单路特征 `x`，通过以下步骤实现频域感知门控：
 
 ### 2.4 创新模块三：DetectGLR——梯度感知层级重加权检测头
 
-**改动文件**：`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（第 352–410 行）
+**改动文件**：`improve/ultralytics/nn/modules/dcaf_fdsg_glr.py`（类 `DetectGLR`，含 `__init__`、`update_glr`、`glr_weights` 方法）
 
 #### 改动前
 
@@ -208,7 +208,7 @@ clamp = (0.25, 4.0)           # 权重范围
 
 ### 2.5 损失函数改造：按层级独立计算并 GLR 加权
 
-**改动文件**：`improve/ultralytics/utils/loss.py`（第 244–397 行）
+**改动文件**：`improve/ultralytics/utils/loss.py`（类 `v8DetectionLoss.__call__` 方法）
 
 #### 改动前
 
@@ -635,13 +635,13 @@ COCO 2017：训练集 ~118K 张，验证集 5K 张，80 个类别，涵盖人、
 ### 训练命令
 
 ```bash
-# 设置 PYTHONPATH
-export PYTHONPATH="/home/dl/xgt/improve/ultralytics:$PYTHONPATH"
+# 设置 PYTHONPATH（将 <project_root> 替换为本仓库根目录的绝对路径）
+export PYTHONPATH="<project_root>/ultralytics:$PYTHONPATH"
 
-# 训练
+# 训练（以 yolo11s 为例）
 yolo task=detect mode=train \
-     model=/home/dl/xgt/improve/ultralytics/cfg/models/11/yolo11s.yaml \
-     data=/home/dl/xgt/improve/myCoco.yaml \
+     model=<project_root>/ultralytics/cfg/models/11/yolo11s.yaml \
+     data=<project_root>/myCoco.yaml \
      epochs=300 \
      device=0,1,2,3,4,5,6,7 \
      batch=64 \
@@ -676,38 +676,38 @@ yolo task=detect mode=train \
 
 | 文件路径 | 内容描述 |
 |----------|----------|
-| `ultralytics/cfg/models/11/yolo11.yaml` | 改进后的模型结构定义（YOLO11-ULCF） |
-| `ultralytics/nn/modules/dcaf_fdsg_glr.py` | DCAF、FDSG、DetectGLR 三个创新模块的完整实现 |
-| `ultralytics/nn/modules/__init__.py` | 新模块注册（DCAF, FDSG, DetectGLR 加入 `__all__`） |
-| `ultralytics/utils/loss.py` | 改造后的 `v8DetectionLoss`（按层级独立计算 + GLR 加权） |
-| `myCoco.yaml` | COCO 2017 数据集配置文件 |
-| `train.py` / `train.txt` | 训练命令记录 |
+| `improve/ultralytics/cfg/models/11/yolo11.yaml` | 改进后的模型结构定义（YOLO11-ULCF） |
+| `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` | DCAF、FDSG、DetectGLR 三个创新模块的完整实现 |
+| `improve/ultralytics/nn/modules/__init__.py` | 新模块注册（DCAF, FDSG, DetectGLR 加入 `__all__`） |
+| `improve/ultralytics/utils/loss.py` | 改造后的 `v8DetectionLoss`（按层级独立计算 + GLR 加权） |
+| `improve/myCoco.yaml` | COCO 2017 数据集配置文件 |
+| `improve/train.py` / `improve/train.txt` | 训练命令记录 |
 
 ### DCAF 模块内部组件索引
 
-| 组件 | 文件位置 | 功能 |
-|------|---------|------|
-| `DetailEnhanceLite` | `dcaf_fdsg_glr.py:151–168` | 低层高频增强（高频 proxy + DWConv） |
-| `SemanticAlignLite` | `dcaf_fdsg_glr.py:118–148` | 高层语义对齐（瓶颈 + 全局池化调制） |
-| `MIBlendGateLite` | `dcaf_fdsg_glr.py:96–115` | 动态三路混合门控（softmax 输出 3 权重） |
-| `DCAF._build` | `dcaf_fdsg_glr.py:192–237` | 按实际通道动态构建子模块 |
-| `DCAF.forward` | `dcaf_fdsg_glr.py:239–270` | 三路融合前向传播 |
+| 组件 | 所在类/方法 | 功能 |
+|------|------------|------|
+| `DetailEnhanceLite` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → 类 `DetailEnhanceLite` | 低层高频增强（高频 proxy + DWConv） |
+| `SemanticAlignLite` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → 类 `SemanticAlignLite` | 高层语义对齐（瓶颈 + 全局池化调制） |
+| `MIBlendGateLite` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → 类 `MIBlendGateLite` | 动态三路混合门控（softmax 输出 3 权重） |
+| `DCAF._build` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `DCAF._build()` | 按实际通道动态构建子模块 |
+| `DCAF.forward` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `DCAF.forward()` | 三路融合前向传播 |
 
 ### FDSG 模块内部组件索引
 
-| 组件 | 文件位置 | 功能 |
-|------|---------|------|
-| `FDSG.__init__` | `dcaf_fdsg_glr.py:276–323` | 初始化（含层级先验、gate_logits） |
-| `FDSG.forward` | `dcaf_fdsg_glr.py:327–344` | 高低频分解 + 三分量门控 + 残差输出 |
+| 组件 | 所在类/方法 | 功能 |
+|------|------------|------|
+| `FDSG.__init__` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `FDSG.__init__()` | 初始化（含层级先验、gate_logits） |
+| `FDSG.forward` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `FDSG.forward()` | 高低频分解 + 三分量门控 + 残差输出 |
 
 ### DetectGLR 模块内部组件索引
 
-| 组件 | 文件位置 | 功能 |
-|------|---------|------|
-| `DetectGLR.__init__` | `dcaf_fdsg_glr.py:357–376` | 初始化 EMA buffer 和超参数 |
-| `DetectGLR.update_glr` | `dcaf_fdsg_glr.py:378–390` | 每步更新 EMA（损失代理梯度） |
-| `DetectGLR.glr_weights` | `dcaf_fdsg_glr.py:392–410` | 计算动态层级权重（含 warmup） |
+| 组件 | 所在类/方法 | 功能 |
+|------|------------|------|
+| `DetectGLR.__init__` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `DetectGLR.__init__()` | 初始化 EMA buffer 和超参数 |
+| `DetectGLR.update_glr` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `DetectGLR.update_glr()` | 每步更新 EMA（损失代理梯度） |
+| `DetectGLR.glr_weights` | `improve/ultralytics/nn/modules/dcaf_fdsg_glr.py` → `DetectGLR.glr_weights()` | 计算动态层级权重（含 warmup） |
 
 ---
 
-*本文档由 YOLO11-ULCF 项目自动生成，基于对 `745hello/improve` 仓库 `main` 分支代码的深度分析。如有疑问，请参考对应源代码文件中的注释。*
+*本文档针对 `745hello/improve` 仓库 `main` 分支代码进行深度分析后撰写，旨在为答辩/汇报提供完整的技术支撑。如代码有后续更新，请对照相应模块同步更新本文档。*
